@@ -4,6 +4,13 @@
 
 namespace mrk {
 
+	/// Retrieves base address of a kernel module by name
+	PVOID GetKernelModuleBase(PCSTR moduleName);
+
+	/// Retrieves base address of ntoskrnl.exe
 	PVOID GetKernelBase();
+
+	/// Retrieves address of a function in a kernel module by name
+	PVOID GetKernelProcAddress(PVOID moduleBase, PCSTR functionName);
 
 } // namespace mrk

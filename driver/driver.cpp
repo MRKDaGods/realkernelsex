@@ -1,6 +1,7 @@
 #include "common.h"
 #include "hook.h"
 #include "callbacks.h"
+#include "mem.h"
 
 extern "C" NTSTATUS DriverEntry(
 	PDRIVER_OBJECT  driver_object,
@@ -17,6 +18,12 @@ extern "C" NTSTATUS DriverEntry(
 		return STATUS_UNSUCCESSFUL;
 	}
 	DRV_LOG("Hook installed successfully");
+
+	PVOID kernelBase = mrk::GetKernelBase();
+	DRV_LOG("Kernel base address: 0x%p", kernelBase);
+
+	PVOID ntQuerySystemInfo = mrk::GetKernelProcAddress(kernelBase, "NtQuerySystemInformation");
+	DRV_LOG("NtQuerySystemInformation address: 0x%p", ntQuerySystemInfo);
 
 	DRV_LOG("DriverEntry complete");
 	return STATUS_SUCCESS;

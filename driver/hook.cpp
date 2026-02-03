@@ -1,7 +1,7 @@
 #include "hook.h"
 
 typedef struct _RUNTIME_CTX {
-	BOOLEAN Active;			// Is the hook active
+	LONG Active;		// Is the hook active
 } RUNTIME_CTX;
 
 static RUNTIME_CTX g_RuntimeCtx = { 0 };
@@ -18,12 +18,12 @@ namespace mrk {
 		}
 
 		// Check if hook is already installed
-		if (InterlockedCompareExchange(&g_RuntimeCtx.Active, TRUE, FALSE) != FALSE) {
+		if (InterlockedCompareExchange(&g_RuntimeCtx.Active, 1, 0) != 0) {
 			DRV_LOG("ERROR: Hook already installed");
 			return FALSE;
 		}
 
-		return FALSE;
+		return TRUE;
 	}
 
 	BOOLEAN InstallHook(PVOID kernelFunction) {
