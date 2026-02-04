@@ -3,7 +3,7 @@
 
 namespace mrk {
 
-	PVOID mrk::GetKernelModuleBase(PCSTR moduleName) {
+	PVOID GetKernelModuleBase(PCSTR moduleName) {
 		ULONG infoSize = 0;
 
 		NTSTATUS status = ZwQuerySystemInformation(
@@ -34,27 +34,28 @@ namespace mrk {
 			&infoSize
 		);
 
-		if (!NT_SUCCESS(status)) {
-			DRV_LOG("Failed to query system information status=0x%X", status);
-			ExFreePoolWithTag(moduleInfo, 'eliF');
-			return NULL;
-		}
+		PVOID exportAddr = NULL;
+		if (NT_SUCCESS(status)) {
+			for (unsigned i = 0; i < moduleInfo->ModulesCount; i++) {
+				PRTL_PROCESS_MODULE_INFORMATION mod = &moduleInfo->Modules[i];
+				PCSTR modName = (PCSTR)(mod->Name + mod->NameOffset);
 
-		for (unsigned i = 0; i < moduleInfo->ModulesCount; i++) {
-			PRTL_PROCESS_MODULE_INFORMATION mod = &moduleInfo->Modules[i];
-			PCSTR modName = (PCSTR)(mod->Name + mod->NameOffset);
-
-			if (!strcmp(modName, moduleName)) {
-				ExFreePoolWithTag(moduleInfo, 'eliF');
-				return mod->ImageBaseAddress;
+				if (!strcmp(modName, moduleName)) {
+					exportAddr = mod->ImageBaseAddress;
+					break;
+				}
 			}
+		}
+		else {
+			DRV_LOG("Failed to query system information status=0x%X", status);
 		}
 
 		ExFreePoolWithTag(moduleInfo, 'eliF');
-		return NULL;
+		return exportAddr;
 	}
 
-	PVOID mrk::GetKernelBase() {
+	PVOID GetKernelBase() {
+		// ntoskrnl.exe is the first module anyway
 		return GetKernelModuleBase("ntoskrnl.exe");
 	}
 
@@ -75,7 +76,7 @@ namespace mrk {
 
 		DWORD rva = ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
 		if (rva == 0) {
-			DRV_LOG("ERROR: No export directory found");
+			DRV_LOG("ERROR: No export directory found for module 0x%p", moduleBase);
 			return NULL;
 		}
 
@@ -94,6 +95,48 @@ namespace mrk {
 		}
 
 		return NULL;
+	}
+
+	BOOLEAN WriteProtectedMemory(PVOID dst, PVOID src, SIZE_T length) {
+		if (!dst || !src || length == 0) {
+			return FALSE;
+		}
+
+		PMDL mdl = IoAllocateMdl(dst, length, FALSE, FALSE, NULL);
+		if (!mdl) {
+			DRV_LOG("ERROR: Failed to allocate mdl");
+			return FALSE;
+		}
+
+		// Lock and map the pages
+		MmBuildMdlForNonPagedPool(mdl);
+		PVOID mapping = MmMapLockedPagesSpecifyCache(
+			mdl,
+			KernelMode,
+			MmNonCached,
+			NULL,
+			FALSE,
+			NormalPagePriority
+		);
+
+		if (!mapping) {
+			DRV_LOG("ERROR: Cannot map mdl");
+			IoFreeMdl(mdl);
+			return FALSE;
+		}
+
+		NTSTATUS status = MmProtectMdlSystemAddress(mdl, PAGE_READWRITE);
+		if (NT_SUCCESS(status)) {
+			RtlCopyMemory(mapping, src, length);
+		}
+		else {
+			DRV_LOG("ERROR: Cannot change memory protection status=0x%X", status);
+		}
+
+		MmUnmapLockedPages(mapping, mdl);
+		IoFreeMdl(mdl);
+
+		return NT_SUCCESS(status);
 	}
 
 } // namespace mrk
