@@ -11,9 +11,12 @@ static const UCHAR g_HookShellcode[] = {
 #define HOOK_SHELLCODE_SIZE sizeof(g_HookShellcode)
 
 typedef struct _RUNTIME_CTX {
-	LONG Active;		// Is the hook active
-	UCHAR OriginalBytes[HOOK_SHELLCODE_SIZE + NMD_X86_MAXIMUM_INSTRUCTION_LENGTH];
+	LONG Active;				// Is the hook active
+	UCHAR OriginalBytes[32];	// HOOK_SHELLCODE_SIZE + NMD_X86_MAXIMUM_INSTRUCTION_LENGTH
 	SIZE_T OriginalBytesLength;
+	UCHAR Trampoline[64];		// 2 * HOOK_SHELLCODE_SIZE + NMD_X86_MAXIMUM_INSTRUCTION_LENGTH
+	SIZE_T TrampolineLength;
+	PVOID HookTarget;			// t<~_^t>
 } RUNTIME_CTX;
 
 static RUNTIME_CTX g_RuntimeCtx = {};
@@ -98,17 +101,32 @@ namespace mrk {
 		return ntQuerySystemInfo;
 	}
 
-	static BOOLEAN DisableHook(PVOID hookTarget) {
-		if (InterlockedCompareExchange(&g_RuntimeCtx.Active, 0, 1) != 1) {
-			DRV_LOG("ERROR: Hook not active");
-			return FALSE;
-		}
+	static void CreateTrampoline(PVOID hookTarget) {
+		// Trampoline size = original bytes + jump back
+		g_RuntimeCtx.TrampolineLength = g_RuntimeCtx.OriginalBytesLength + HOOK_SHELLCODE_SIZE;
 
-		// Restore original bytes
-		DRV_LOG("Restoring original bytes (length=%lld)", g_RuntimeCtx.OriginalBytesLength);
-		WriteProtectedMemory(hookTarget, g_RuntimeCtx.OriginalBytes, g_RuntimeCtx.OriginalBytesLength);
+		// Copy original bytes
+		RtlCopyMemory(g_RuntimeCtx.Trampoline, g_RuntimeCtx.OriginalBytes, g_RuntimeCtx.OriginalBytesLength);
 
-		return TRUE;
+		// Jump back
+		PVOID jmpFrom = g_RuntimeCtx.Trampoline + g_RuntimeCtx.OriginalBytesLength;
+		PVOID jmpTo = (PVOID)((ULONG_PTR)hookTarget + g_RuntimeCtx.OriginalBytesLength);
+		CreateJump(
+			jmpFrom, /* Unprotected */
+			jmpTo
+		);
+
+		DRV_LOG("Created trampoline from=0x%p to=0x%p",
+			jmpFrom,
+			jmpTo
+		);
+
+		// Pad with 0xcc
+		memset(
+			g_RuntimeCtx.Trampoline + g_RuntimeCtx.TrampolineLength,
+			0xCC,
+			sizeof(g_RuntimeCtx.Trampoline) - g_RuntimeCtx.TrampolineLength
+		);
 	}
 
 	/// Internal implementation of InstallHook
@@ -132,6 +150,7 @@ namespace mrk {
 			InterlockedExchange(&g_RuntimeCtx.Active, 0);
 			return FALSE;
 		}
+		g_RuntimeCtx.HookTarget = hookTarget;
 
 		SIZE_T minHookSize = CalculateHookSize(hookTarget);
 		DRV_LOG("Min hook size: %lld bytes", minHookSize);
@@ -158,16 +177,24 @@ namespace mrk {
 			);
 		}
 
+		// Create trampoline
+		DRV_LOG("Creating trampoline...");
+		CreateTrampoline(hookTarget);
+
+		// Print trampoline disassembly
+		// DRV_LOG("Trampoline disassembly:");
+		// PrintDisassembly(g_RuntimeCtx.Trampoline, g_RuntimeCtx.TrampolineLength);
+
 		// Print new disassembly
-		//PrintDisassembly(hookTarget, HOOK_SHELLCODE_SIZE);
+		// PrintDisassembly(hookTarget, minHookSize);
 
 		// Restore for my sanity
-		DRV_LOG("Disabling hook...");
+		/*DRV_LOG("Disabling hook...");
 		if (!DisableHook(hookTarget)) {
 			DRV_LOG("ERROR: Failed to disable hook");
 			return false;
 		}
-		DRV_LOG("Hook disabled successfully");
+		DRV_LOG("Hook disabled successfully");*/
 
 		return TRUE;
 	}
@@ -177,6 +204,32 @@ namespace mrk {
 		BOOLEAN result = InstallHookInternal(kernelFunction);
 		DRV_LOG("Hook installation result: %s", result ? "SUCCESS" : "FAILURE");
 		return result;
+	}
+
+	BOOLEAN UninstallHook() {
+		if (InterlockedCompareExchange(&g_RuntimeCtx.Active, 0, 1) != 1) {
+			DRV_LOG("ERROR: Hook not active");
+			return FALSE;
+		}
+
+		// Restore original bytes
+		DRV_LOG("Restoring original bytes (length=%lld)", g_RuntimeCtx.OriginalBytesLength);
+		WriteProtectedMemory(g_RuntimeCtx.HookTarget, g_RuntimeCtx.OriginalBytes, g_RuntimeCtx.OriginalBytesLength);
+
+		// Clean up ctx
+		g_RuntimeCtx.OriginalBytesLength = 0;
+		RtlSecureZeroMemory(g_RuntimeCtx.OriginalBytes, sizeof(g_RuntimeCtx.OriginalBytes));
+
+		g_RuntimeCtx.TrampolineLength = 0;
+		RtlSecureZeroMemory(g_RuntimeCtx.Trampoline, sizeof(g_RuntimeCtx.Trampoline));
+
+		g_RuntimeCtx.HookTarget = NULL;
+
+		return TRUE;
+	}
+
+	PVOID GetTrampoline() {
+		return g_RuntimeCtx.Trampoline;
 	}
 
 } // namespace mrk
